@@ -1,14 +1,20 @@
 package mapreduce
 
 import (
+	"bufio"
+	"encoding/json"
 	"fmt"
 	"hash/fnv"
+	"io"
+	"io/ioutil"
 	"log"
+	"os"
+	"sort"
 	"strconv"
 )
 
 // 是否开启 debug
-const debugEnabled = false
+const debugEnabled = true
 
 func debug(format string, a ...interface{}) (n int, err error) {
 	if debugEnabled {
@@ -53,7 +59,24 @@ func doMap(
 	nReduce int,
 	mapF func(file string, contents string) []KeyValue,
 ) {
+	dat, err := ioutil.ReadFile(inFile)
+	if err != nil {
+		return
+	}
+	content := string(dat)
+	kvs := mapF(inFile, content)
+	interFiles := make([]*os.File, nReduce)
+	for i := 0; i < nReduce; i++ {
+		fName := reduceName(jobName, mapTaskNumber, i)
+		interFiles[i], _ = os.Create(fName)
+		defer interFiles[i].Close()
+	}
 
+	for _, kv := range kvs {
+		iReduce := ihash(kv.Key) % uint32(nReduce)
+		enc := json.NewEncoder(interFiles[iReduce])
+		enc.Encode(&kv)
+	}
 }
 
 func doReduce(
@@ -62,7 +85,47 @@ func doReduce(
 	nMap int,
 	reduceF func(key string, values []string) string,
 ) {
+	var kvs []KeyValue
+	for m := 0; m < nMap; m++ {
+		interFile := reduceName(jobName, m,reduceTaskNumber)
+		f, err := os.Open(interFile)
+		checkError("Open file: ", err)
+		defer f.Close()
+		br := bufio.NewReader(f)
+		for {
+			line, _, next := br.ReadLine()
+			var tmp KeyValue
+			json.Unmarshal(line, &tmp)
+			if next == io.EOF {
+				break
+			}
+			kvs = append(kvs, tmp)
+		}
+	}
 
+	sort.Slice(kvs, func(i, j int) bool {
+		return kvs[i].Key < kvs[j].Key
+	})
+
+	mergeName := mergeName(jobName, reduceTaskNumber)
+	mergeFile, err := os.Create(mergeName)
+	checkError("Merge File: ", err)
+	defer mergeFile.Close()
+	enc := json.NewEncoder(mergeFile)
+	if len(kvs) <= 0 {
+		return
+	}
+	key := kvs[0].Key
+	var values []string
+	for _, kv := range kvs {
+		if kv.Key != key {
+			enc.Encode(KeyValue{key, reduceF(key, values)})
+			key = kv.Key
+			values = nil
+		}
+		values = append(values, kv.Value)
+	}
+	enc.Encode(KeyValue{key, reduceF(key, values)})
 }
 
 func ihash(s string) uint32 {

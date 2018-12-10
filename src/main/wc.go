@@ -22,11 +22,11 @@ func mapF(document string, value string) (res []mapreduce.KeyValue) {
 
 func reduceF(key string, values []string) string {
 	res := 0
-	for _, v := range values {
-		 value, _ := strconv.Atoi(v)
+	for _, value := range values {
+		 value, _ := strconv.Atoi(value)
 		 res += value
 	}
-	return string(res)
+	return strconv.Itoa(res)
 }
 
 
@@ -37,6 +37,7 @@ func main() {
 		var mr *mapreduce.Master
 		if os.Args[2] == "sequential" {
 			mr = mapreduce.Sequential("wcseq", os.Args[3:], 3, mapF, reduceF)
+			mr.CleanupFiles()
 		} else {
 			mr = mapreduce.Distributed("wcdis", os.Args[3:], 3, os.Args[2])
 		}
