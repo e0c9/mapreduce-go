@@ -11,6 +11,7 @@ import (
 	"os"
 	"sort"
 	"strconv"
+	"sync"
 )
 
 // 是否开启 debug
@@ -87,7 +88,7 @@ func doReduce(
 ) {
 	var kvs []KeyValue
 	for m := 0; m < nMap; m++ {
-		interFile := reduceName(jobName, m,reduceTaskNumber)
+		interFile := reduceName(jobName, m, reduceTaskNumber)
 		f, err := os.Open(interFile)
 		checkError("Open file: ", err)
 		defer f.Close()
@@ -135,5 +136,44 @@ func ihash(s string) uint32 {
 }
 
 func (mr *Master) schedule(phase jobPhase) {
+	var ntasks int
+	var nios int
+	switch phase {
+	case mapPhase:
+		ntasks = len(mr.files)
+		nios = mr.nReduce
+	case reducePhase:
+		ntasks = mr.nReduce
+		nios = len(mr.files)
+	}
 
+	debug("Schedule: %v %v tasks (%d I/Os)\n", ntasks, phase, nios)
+
+	args := DoTaskArgs{JobName: mr.jobName,Phase: phase, NumOtherPhase: nios}
+
+	var wg sync.WaitGroup
+	wg.Add(ntasks)
+	debug("------ntasks %v -------\n", ntasks)
+	for i := 0; i < ntasks; i++ {
+		if phase == mapPhase {
+			args.File = mr.files[i]
+			fmt.Printf("文件名为%v\n", args.File)
+		}
+		args.TaskNumber = i
+		args := args // 非常重要
+		workerAddress := <- mr.registerChannel
+		var exec func(string, DoTaskArgs)
+		exec = func(workerAddress string, args DoTaskArgs) {
+			res := call(workerAddress, "Worker.DoTask", args, nil)
+			if res == false {
+				wg.Add(1)
+				go exec(<- mr.registerChannel, args)
+			}
+			wg.Done()
+			mr.registerChannel <- workerAddress
+		}
+		go exec(workerAddress, args)
+	}
+	wg.Wait()
+	debug("Schedule: %v phase done\n", phase)
 }
